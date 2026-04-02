@@ -2,46 +2,78 @@
 
 Clash Verge (Mihomo) 与 SealSuite VPN 共存配置，使 AI 服务流量通过 SealSuite 企业 VPN 访问。
 
-## Architecture
+## SealSuite + Clash Verge Workflow Diagram
 
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#F8FAFC', 'primaryTextColor': '#1E293B', 'primaryBorderColor': '#CBD5E1', 'lineColor': '#475569', 'secondaryColor': '#F1F5F9', 'tertiaryColor': '#E2E8F0', 'background': '#FFFFFF', 'mainBkg': '#F8FAFC', 'secondBkg': '#F1F5F9'}}}%%
 flowchart TD
-    AppReq[💻 Application Request] --> ProxyCheck{System Proxy<br/>Configured?}
+    %% Setup Phase
+    Start([🚀 SealSuite Starts]) --> Setup[🔧 Configure Local DNS Server<br/>as Highest Priority]
+    Setup --> VPN[🔒 Create VPN Tunnel<br/>utun Interface]
+    VPN --> DefaultRoute[🗺️ Add Default Route<br/>via utun Interface]
+    DefaultRoute --> Ready[✅ System Ready<br/>All DNS Queries Intercepted]
 
-    %% Proxy-aware apps (browser)
-    ProxyCheck -->|Yes| ClashProxy[⚡ Clash Verge<br/>127.0.0.1:7897]
-    ClashProxy --> RuleMatch{📋 Rule Match}
+    %% Application Request
+    Ready --> AppReq[💻 Application Makes<br/>Network Request]
 
-    RuleMatch -->|AI Domains<br/>RULE-SET match| AIPath[🛡️ DIRECT + System DNS<br/>nameserver-policy: system]
-    RuleMatch -->|Foreign| ProxyNode[🌐 Proxy Node]
-    RuleMatch -->|Domestic| DirectClash[🏠 DIRECT]
+    %% Proxy Detection
+    AppReq --> ProxyCheck{🔍 Application Respects<br/>System Proxy?}
 
-    AIPath --> SealDNS[SealSuite DNS<br/>127.0.0.1:53]
-    SealDNS --> FakeIP[Fake IP 30.100.x.x]
-    FakeIP --> VPNTunnel[🔒 VPN Tunnel]
-    VPNTunnel --> AITarget[🎯 AI Service]
+    %% Clash Verge Path - Proxy Aware Apps
+    ProxyCheck -->|Yes| ClashProxy[⚡ Clash Verge Proxy<br/>127.0.0.1:7897]
+    ClashProxy --> ClashDNS[🔍 Clash DNS Resolution<br/>fake-ip / redir-host]
+    ClashDNS --> RuleMatch{📋 Match Clash Rules}
 
-    ProxyNode --> ForeignTarget[🎯 Foreign Server]
-    DirectClash --> DomesticTarget[🏠 Domestic Server]
+    %% Clash Rule Matching
+    RuleMatch -->|AI Domains<br/>rule-set match| FakeIPFilter[🚫 fake-ip-filter<br/>Bypass fake-ip]
+    RuleMatch -->|Other Foreign| ClashNode[🌐 Route via<br/>Proxy Node]
+    RuleMatch -->|Domestic| ClashDirect[🏠 DIRECT<br/>via Clash]
 
-    %% CLI tools (no proxy)
-    ProxyCheck -->|No<br/>CLI Tools| SealDNS2[SealSuite DNS<br/>127.0.0.1:53]
-    SealDNS2 --> FakeIP2[Fake IP 30.100.x.x]
-    FakeIP2 --> VPNTunnel2[🔒 VPN Tunnel]
+    %% AI Domain - System DNS Path
+    FakeIPFilter --> SystemDNS[🛡️ SealSuite DNS<br/>127.0.0.1:53]
+    SystemDNS --> DomainCheck{🌍 SealSuite<br/>Whitelist Match?}
+
+    %% SealSuite Whitelist Hit
+    DomainCheck -->|Yes| FakeIP[🔀 Return Fake IP<br/>30.100.x.x]
+    FakeIP --> RouteAdd[🗺️ Route Added to<br/>System Table]
+    RouteAdd --> VPNTunnel[🔒 Route via VPN<br/>Tunnel]
+    VPNTunnel --> VPNServer[🌐 VPN Server Resolves<br/>Real DNS & Forwards]
+    VPNServer --> AITarget[🎯 AI Service<br/>Target Server]
+
+    %% SealSuite Whitelist Miss
+    DomainCheck -->|No| RealIP[✅ Return Real IP]
+    RealIP --> DirectOut[🔄 Direct Route<br/>No VPN]
+
+    %% Proxy Node Path
+    ClashNode --> ForeignTarget[🎯 Foreign<br/>Target Server]
+
+    %% Direct Path
+    ClashDirect --> DomesticTarget[🏠 Domestic<br/>Target Server]
+
+    %% Non-Proxy Apps (CLI tools etc.)
+    ProxyCheck -->|No| CLICheck{🖥️ Terminal / CLI<br/>HTTPS_PROXY set?}
+    CLICheck -->|Yes| ClashProxy
+    CLICheck -->|No| SealDNS2[🛡️ SealSuite DNS<br/>Intercepts Query]
+    SealDNS2 --> DomainCheck2{🌍 SealSuite<br/>Whitelist Match?}
+    DomainCheck2 -->|Yes| VPNTunnel2[🔒 Route via VPN]
     VPNTunnel2 --> AITarget
+    DomainCheck2 -->|No| DirectOut2[🔄 Direct Route]
+    DirectOut2 --> DomesticTarget
 
+    %% Styling
+    classDef setupPhase fill:#DBEAFE,stroke:#3B82F6,stroke-width:2px,color:#1E40AF
+    classDef dnsProcess fill:#D1FAE5,stroke:#10B981,stroke-width:2px,color:#065F46
     classDef decision fill:#FEF3C7,stroke:#F59E0B,stroke-width:2px,color:#92400E
     classDef clashProcess fill:#E0E7FF,stroke:#8B5CF6,stroke-width:2px,color:#5B21B6
     classDef vpnProcess fill:#FECACA,stroke:#EF4444,stroke-width:2px,color:#B91C1C
-    classDef dnsProcess fill:#D1FAE5,stroke:#10B981,stroke-width:2px,color:#065F46
     classDef target fill:#F3E8FF,stroke:#A855F7,stroke-width:2px,color:#7C2D12
 
-    class ProxyCheck,RuleMatch decision
-    class ClashProxy,ProxyNode,DirectClash clashProcess
-    class VPNTunnel,VPNTunnel2 vpnProcess
-    class AIPath,SealDNS,SealDNS2,FakeIP,FakeIP2 dnsProcess
-    class AITarget,ForeignTarget,DomesticTarget target
+    class Start,Setup,VPN,DefaultRoute,Ready setupPhase
+    class SystemDNS,FakeIPFilter,FakeIP,RealIP,RouteAdd,SealDNS2 dnsProcess
+    class ProxyCheck,RuleMatch,DomainCheck,DomainCheck2,CLICheck decision
+    class ClashProxy,ClashDNS,ClashNode,ClashDirect clashProcess
+    class VPNTunnel,VPNServer,VPNTunnel2 vpnProcess
+    class AITarget,ForeignTarget,DomesticTarget,DirectOut,DirectOut2 target
 ```
 
 ## What We Changed
